@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TOY Query Planner Demo (Server-Driven)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              "planner-blue": "#1E40AF", // Dark blue for primary actions
+              "stage-parse": "#34D399", // Green
+              "stage-logical": "#FBBF24", // Yellow
+              "stage-optimize": "#F87171", // Red/Coral
+              "stage-physical": "#60A5FA", // Light Blue
+              "stage-execute": "#8B5CF6", // Purple
+              "stage-result": "#10B981", // Emerald
+            },
+            fontFamily: {
+              sans: ["Inter", "sans-serif"],
+              mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      .flow-step {
+        transition: all 0.3s ease-in-out;
+        border: 2px solid transparent;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        text-align: center;
+        padding: 0.5rem;
+      }
+      .active-step {
+        transform: scale(1.05);
+        box-shadow: 0 10px 15px rgba(30, 64, 175, 0.3);
+        animation: pulse-border 1.5s infinite alternate;
+      }
+      @keyframes pulse-border {
+        from {
+          border-color: rgba(30, 64, 175, 0.5);
+        }
+        to {
+          border-color: rgba(30, 64, 175, 1);
+        }
+      }
+      .terminal {
+        background-color: #1f2937;
+        color: #34d399;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        font-family: monospace;
+        min-height: 100px;
+        overflow-y: auto;
+        max-height: 40vh;
+        white-space: pre-wrap; /* Preserve formatting from the server */
+      }
+      /* Connectors for visual flow (simplified for responsiveness) */
+      .stage-group {
+        position: relative;
+      }
+      .stage-group:not(:last-child)::after {
+        content: "";
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 2px;
+        height: 20px;
+        background-color: #d1d5db;
+      }
+      @media (min-width: 768px) {
+        .stage-group:not(:last-child)::after {
+          content: none; /* Hide vertical connector on desktop */
+        }
+        .grid-cols-5 > div:not(:last-child) {
+          position: relative;
+        }
+        .grid-cols-5 > div:not(:last-child)::after {
+          content: "";
+          position: absolute;
+          top: 50%;
+          left: 100%;
+          transform: translateY(-50%);
+          width: 100%;
+          height: 2px;
+          background-color: #d1d5db;
+        }
+      }
+      .result-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+        font-size: 0.9rem;
+      }
+      .result-table th,
+      .result-table td {
+        padding: 0.75rem 1rem;
+        border-bottom: 1px solid #e5e7eb;
+        text-align: left;
+      }
+      .result-table th {
+        background-color: #f3f4f6;
+        font-weight: 600;
+        color: #1f2937;
+        text-transform: uppercase;
+      }
+      .result-table tr:hover {
+        background-color: #f9fafb;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-100 min-h-screen p-4 md:p-8 font-sans">
+    <div class="max-w-6xl mx-auto">
+      <h1 class="text-4xl font-extrabold text-gray-800 text-center mb-2">
+        DB Query Planning Pipeline Demo
+      </h1>
+      <p class="text-center text-gray-600 mb-8">
+        Web view driven by Flask Python backend (Server must be running on port
+        5000).
+      </p>
+
+      <!-- INPUTS AND DATA -->
+      <div
+        class="bg-white p-6 rounded-xl shadow-lg mb-8 grid grid-cols-1 md:grid-cols-3 gap-4"
+      >
+        <div class="md:col-span-2">
+          <label
+            for="sqlInput"
+            class="block text-sm font-medium text-gray-700 mb-1"
+            >SQL Query (SELECT... FROM t1 WHERE... LIMIT...)</label
+          >
+          <input
+            type="text"
+            id="sqlInput"
+            value="SELECT city, avg_temp_c, precipitation_mm FROM nl_weather WHERE avg_temp_c > 14.0 LIMIT 3"
+            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-planner-blue focus:border-planner-blue text-sm font-mono"
+            placeholder="SELECT col1, col2 FROM table WHERE condition LIMIT N"
+          />
+        </div>
+
+        <div class="md:col-span-1">
+          <label
+            for="tableName"
+            class="block text-sm font-medium text-gray-700 mb-1"
+            >Target Table Name</label
+          >
+          <input
+            type="text"
+            id="tableName"
+            value="nl_weather"
+            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-planner-blue focus:border-planner-blue text-sm font-mono"
+            placeholder="nl_weather"
+          />
+        </div>
+
+        <div class="md:col-span-3">
+          <label
+            for="dataInput"
+            class="block text-sm font-medium text-gray-700 mb-1"
+            >Mock Data (CSV Format - Paste your "uploads" here)</label
+          >
+          <textarea
+            id="dataInput"
+            rows="7"
+            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-planner-blue focus:border-planner-blue text-xs font-mono"
+            placeholder="station_id,city,date,avg_temp_c,precipitation_mm,wind_speed_kmh"
+          >
+station_id,city,date,avg_temp_c,precipitation_mm,wind_speed_kmh
+S001,St. John's,2025-09-01,15.2,5.5,25
+S002,Gander,2025-09-01,12.8,10.1,35
+S003,Corner Brook,2025-09-01,14.5,2.0,18
+S004,St. John's,2025-09-02,16.0,0.0,20
+S005,Gander,2025-09-02,13.5,0.5,30
+S006,Corner Brook,2025-09-02,15.0,0.0,15</textarea
+          >
+        </div>
+
+        <div class="md:col-span-3">
+          <button
+            onclick="runQuery()"
+            id="runButton"
+            class="w-full bg-planner-blue hover:bg-blue-800 text-white font-bold py-3 rounded-lg transition duration-200 shadow-md"
+          >
+            EXECUTE QUERY PIPELINE (Requires Flask Server)
+          </button>
+        </div>
+      </div>
+
+      <!-- VISUAL PIPELINE -->
+      <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <h2 class="text-xl font-semibold mb-4 text-gray-800">Pipeline Flow</h2>
+
+        <div class="grid grid-cols-5 gap-y-6 md:gap-x-4">
+          <!-- Pipeline Stage Boxes -->
+          <div
+            class="col-span-5 md:col-span-1 flex flex-col items-center stage-group"
+          >
+            <div
+              id="parse"
+              class="flow-step block-parse bg-stage-parse text-white w-full py-2 rounded-lg"
+            >
+              1. PARSING (AST)
+            </div>
+          </div>
+          <div
+            class="col-span-5 md:col-span-1 flex flex-col items-center stage-group"
+          >
+            <div
+              id="logical"
+              class="flow-step block-logical bg-stage-logical text-gray-800 w-full py-2 rounded-lg"
+            >
+              2. LOGICAL PLAN
+            </div>
+          </div>
+          <div
+            class="col-span-5 md:col-span-1 flex flex-col items-center stage-group"
+          >
+            <div
+              id="optimize"
+              class="flow-step block-optimize bg-stage-optimize text-white w-full py-2 rounded-lg"
+            >
+              3. OPTIMIZATION
+            </div>
+          </div>
+          <div
+            class="col-span-5 md:col-span-1 flex flex-col items-center stage-group"
+          >
+            <div
+              id="physical"
+              class="flow-step block-physical bg-stage-physical text-white w-full py-2 rounded-lg"
+            >
+              4. PHYSICAL PLAN
+            </div>
+          </div>
+          <div
+            class="col-span-5 md:col-span-1 flex flex-col items-center stage-group"
+          >
+            <div
+              id="execute"
+              class="flow-step block-execute bg-stage-execute text-white w-full py-2 rounded-lg"
+            >
+              5. EXECUTION
+            </div>
+          </div>
+
+          <!-- Output Terminal (Spans all columns) -->
+          <div class="col-span-5 mt-4">
+            <h3 class="text-lg font-medium text-gray-800 mb-2">
+              Terminal Output (Plan Trees & Execution)
+            </h3>
+            <div id="outputTerminal" class="terminal">
+              <span class="text-yellow-400"
+                >Welcome to the Server-Driven Query Planner Demo. 1. Run 'python
+                app.py'. 2. Hit EXECUTE.</span
+              >
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FINAL RESULT TABLE -->
+      <div class="bg-white p-6 rounded-xl shadow-lg">
+        <h2 class="text-xl font-semibold mb-4 text-gray-800">
+          Final Query Result Table
+        </h2>
+        <div
+          id="resultTableContainer"
+          class="p-4 bg-gray-50 rounded-lg overflow-x-auto min-h-[100px] flex items-center justify-center text-gray-500"
+        >
+          The resulting data will appear here after execution.
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const API_URL = "http://127.0.0.1:5000/run_query";
+      const terminal = document.getElementById("outputTerminal");
+      const resultTableContainer = document.getElementById(
+        "resultTableContainer"
+      );
+      const pipelineSteps = [
+        "parse",
+        "logical",
+        "optimize",
+        "physical",
+        "execute",
+      ];
+
+      function log(message, colorClass = "text-gray-300") {
+        terminal.innerHTML += `<div class="${colorClass}">${message}</div>`;
+        terminal.scrollTop = terminal.scrollHeight; // Auto-scroll
+      }
+
+      function resetUI() {
+        pipelineSteps.forEach((id) => {
+          document.getElementById(id)?.classList.remove("active-step");
+        });
+        terminal.innerHTML = "";
+        resultTableContainer.innerHTML =
+          "The resulting data will appear here after execution.";
+      }
+
+      async function activateStep(stepId) {
+        pipelineSteps.forEach((id) => {
+          document.getElementById(id)?.classList.remove("active-step");
+        });
+        document.getElementById(stepId)?.classList.add("active-step");
+        await new Promise((resolve) => setTimeout(resolve, 300)); // Short delay for visual effect
+      }
+
+      function getStepColor(stepId) {
+        const colors = {
+          data: "text-gray-400",
+          parse: "text-stage-parse",
+          logical: "text-stage-logical",
+          optimize: "text-stage-optimize",
+          physical: "text-stage-physical",
+          execute: "text-stage-execute",
+          error: "text-red-500",
+        };
+        return colors[stepId] || "text-white";
+      }
+
+      function renderTable(records) {
+        if (!records || records.length === 0) {
+          resultTableContainer.innerHTML =
+            '<p class="text-red-500 font-bold">No records returned by the query. Please check your query or data.</p>';
+          return;
+        }
+
+        // Get headers from the first record keys
+        const headers = Object.keys(records[0]);
+
+        let html = '<table class="result-table bg-white rounded-lg shadow-md">';
+
+        // Table Header
+        html += "<thead><tr>";
+        headers.forEach((header) => {
+          html += `<th>${header.toUpperCase().replace(/_/g, " ")}</th>`;
+        });
+        html += "</tr></thead>";
+
+        // Table Body
+        html += "<tbody>";
+        records.forEach((record) => {
+          html += "<tr>";
+          headers.forEach((header) => {
+            // Display 'NULL' if the value is null, otherwise display the value
+            const value =
+              record[header] === null
+                ? '<span class="text-red-500 font-bold">NULL</span>'
+                : record[header];
+            html += `<td>${value}</td>`;
+          });
+          html += "</tr>";
+        });
+        html += "</tbody></table>";
+
+        resultTableContainer.innerHTML = html;
+      }
+
+      async function runQuery() {
+        const runButton = document.getElementById("runButton");
+        runButton.disabled = true;
+        runButton.textContent = "Processing Pipeline...";
+        resetUI();
+        log("Sending request to Flask API...", "text-yellow-400");
+
+        try {
+          const sqlQuery = document.getElementById("sqlInput").value;
+          const tableName = document.getElementById("tableName").value;
+          const mockDataCSV = document.getElementById("dataInput").value;
+
+          const response = await fetch(API_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              sql_query: sqlQuery,
+              csv_data: mockDataCSV,
+              table_name: tableName,
+            }),
+          });
+
+          const result = await response.json();
+
+          if (!response.ok || result.error) {
+            throw new Error(
+              result.error || `Server responded with status ${response.status}`
+            );
+          }
+
+          // 1. Process Logs and Visual Flow
+          log(
+            "\n--- STAGE LOGS AND PLAN TREES (JSON Content Below) ---",
+            "text-yellow-400"
+          );
+
+          for (const logEntry of result.log) {
+            const { stage, message } = logEntry;
+
+            // Activate visual step
+            await activateStep(stage);
+
+            // Log the message
+            const colorClass = getStepColor(stage);
+            log(`[${stage.toUpperCase()}] ${message}`, colorClass);
+          }
+
+          // 2. Display Structured Plan Trees and Execution JSON
+          log("\n--- DETAILED PLAN TREES ---", "text-yellow-400");
+
+          log(
+            `\n[LOGICAL PLAN (Initial)]\n${result.stages.logical}`,
+            getStepColor("logical")
+          );
+          log(
+            `\n[LOGICAL PLAN (Optimized)]\n${result.stages.optimize}`,
+            getStepColor("optimize")
+          );
+          log(
+            `\n[PHYSICAL PLAN (Execution Strategy)]\n${result.stages.physical}`,
+            getStepColor("physical")
+          );
+
+          // Show the raw execution JSON in the terminal
+          log(
+            `\n[EXECUTION RESULT (Raw JSON)]\n${result.stages.execute}`,
+            getStepColor("execute")
+          );
+
+          // 3. Display Final Result (As Table)
+          const finalRecords = JSON.parse(result.stages.execute);
+          renderTable(finalRecords);
+          log(
+            `\n--- EXECUTION COMPLETE --- Displaying ${finalRecords.length} records in the table below.`,
+            "text-stage-execute"
+          );
+        } catch (error) {
+          log(
+            `\n!!! CONNECTION/SERVER ERROR !!!: Ensure Flask server is running on ${API_URL}`,
+            "text-red-500"
+          );
+          log(`Details: ${error.message}`, "text-red-500");
+        } finally {
+          runButton.disabled = false;
+          runButton.textContent =
+            "EXECUTE QUERY PIPELINE (Requires Flask Server)";
+          document.getElementById("execute")?.classList.add("active-step");
+        }
+      }
+
+      // Run on load
+      window.onload = () => {
+        resetUI();
+        log(
+          "Demo ready. 1. Run 'python app.py' in your terminal. 2. Hit EXECUTE.",
+          "text-yellow-400"
+        );
+      };
+    </script>
+  </body>
+</html>
