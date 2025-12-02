@@ -1,39 +1,45 @@
-# optimizer.py
-from typing import Dict, Any
-from logical_plan import LogicalPlan # Direct Import
+# ============================================================================
+# optimizer.py - Rule-Based Query Optimizer
+# ============================================================================
 
-def optimize(logical_plan: LogicalPlan) -> Dict[str, Any]:
+from typing import Dict, Any
+
+def optimize(logical_plan) -> Dict[str, Any]:
     """
     Applies optimization rules to the logical plan.
-
-    Optimization Rule: Limit Pushdown (Push Limit node down past Project node).
     
-    Why: By limiting the rows *before* performing expensive projections (like 
-    complex calculations), we save computation time.
+    Current Rule: Limit Pushdown
+    - Pattern: Limit(Project(X)) 
+    - Transform: Project(Limit(X))
+    - Benefit: Reduces rows processed by expensive projections
     """
     plan = logical_plan
-    message = "No major optimizations applied."
+    message = "No optimization applied (no applicable pattern found)"
 
-    # Check for Limit(Project(X)) pattern
+    # Rule 1: Limit Pushdown
     if (plan.operation == 'Limit' and 
         plan.child and 
         plan.child.operation == 'Project'):
         
         limit_count = plan.kwargs.get('count')
         project_plan = plan.child
+        project_fields = project_plan.kwargs.get('fields')
         
-        # New structure: Project -> Limit -> X
+        # New structure: Project(Limit(child))
+        from logical_plan import LogicalPlan
         optimized_plan = LogicalPlan(
-            'Project', 
+            'Project',
             child=LogicalPlan(
                 'Limit',
-                child=project_plan.child, # X (Filter/Scan)
+                child=project_plan.child,
                 count=limit_count
             ),
-            fields=project_plan.kwargs.get('fields')
+            fields=project_fields
         )
         
         plan = optimized_plan
-        message = "Applied Limit Pushdown: Moved Limit below Project. Reduces unnecessary row calculations."
+        message = (f"✓ Limit Pushdown Applied: Moved LIMIT {limit_count} below PROJECT. "
+                   f"This reduces tuple processing in projection stage.")
 
     return {'plan': plan, 'message': message}
+
